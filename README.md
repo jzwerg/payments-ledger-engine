@@ -51,7 +51,7 @@ See [`docs/product/brief.md`](./docs/product/brief.md) for the product thinking 
 ## Run it
 
 ```bash
-docker-compose up        # multi-node CockroachDB cluster + payment API
+docker compose up        # multi-node CockroachDB cluster + payment API  (or: make up)
 ```
 
 No hosted instance to keep alive — the demo *is* the local run, and the proof is in CI. Every push runs the headline demo in GitHub Actions: a concurrent load test fires duplicate and simultaneous payments while a CockroachDB node is killed mid-flight. **A green check means `∑debits = ∑credits` held — no double-spend, no lost entries.** Reproducible evidence, not a screenshot.

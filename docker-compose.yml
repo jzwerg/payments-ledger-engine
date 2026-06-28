@@ -1,0 +1,59 @@
+# First-boot skeleton — a 3-node CockroachDB cluster + the payment API.
+# Goal of this file: `docker compose up` brings the cluster to a healthy,
+# initialised state and the API connects. The headline node-kill demo is the
+# NEXT milestone (see MILESTONE.md / PLAN.md), not this one.
+#
+# Host ports for this project live in the 81xx range (see MILESTONE.md).
+
+x-crdb: &crdb
+  image: cockroachdb/cockroach:v24.1.5
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "cockroach", "sql", "--insecure", "-e", "SELECT 1"]
+    interval: 10s
+    timeout: 5s
+    retries: 10
+
+services:
+  crdb-1:
+    <<: *crdb
+    command: start --insecure --join=crdb-1,crdb-2,crdb-3
+    volumes: [crdb-1-data:/cockroach/cockroach-data]
+    ports:
+      - "8157:26257"   # SQL
+      - "8180:8080"    # admin UI
+
+  crdb-2:
+    <<: *crdb
+    command: start --insecure --join=crdb-1,crdb-2,crdb-3
+    volumes: [crdb-2-data:/cockroach/cockroach-data]
+
+  crdb-3:
+    <<: *crdb
+    command: start --insecure --join=crdb-1,crdb-2,crdb-3
+    volumes: [crdb-3-data:/cockroach/cockroach-data]
+
+  # Runs once to form the cluster, then exits 0.
+  crdb-init:
+    image: cockroachdb/cockroach:v24.1.5
+    command: init --insecure --host=crdb-1
+    depends_on:
+      crdb-1: { condition: service_started }
+      crdb-2: { condition: service_started }
+      crdb-3: { condition: service_started }
+    restart: "no"
+
+  api:
+    build: .                       # TODO(session): add Dockerfile (Go)
+    depends_on:
+      crdb-init: { condition: service_completed_successfully }
+    environment:
+      DATABASE_URL: "postgresql://root@crdb-1:26257/ledger?sslmode=disable"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+    ports:
+      - "8100:8080"                # payment API
+
+volumes:
+  crdb-1-data:
+  crdb-2-data:
+  crdb-3-data:
