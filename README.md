@@ -1,7 +1,10 @@
 # Payments & Ledger Engine
 
-> A correct, idempotent, fault-tolerant **distributed double-entry ledger on CockroachDB**, with ISO 20022 payment processing and a reconciliation engine. One thesis: the ledger stays correct — under concurrency, and even when a database node dies.
+> Moving money is the one place fintech cannot be "mostly right" — yet teams build ledgers that double-spend, drift, or fall over when a node dies, and discover it in production where the errors are irreversible. **Payments & Ledger Engine is a money-movement core you can trust:** a distributed double-entry ledger on CockroachDB where `∑debits = ∑credits` always holds — under concurrency, and even when a database node dies — with ISO 20022 processing and reconciliation on top.
+>
+> *Under the hood: an append-only double-entry ledger on a multi-node CockroachDB cluster (serializable by default), idempotency keys for exactly-once payments, ISO 20022 (`pain.001` → `pacs.008` → `pacs.002`).*
 
+**For:** payments-platform engineers who need to build on a correct ledger, not debug one.
 **Skill signal:** Payments · distributed systems · correctness & concurrency
 **Region anchor:** EU (SEPA Instant) · UK (Faster Payments) · US (FedNow) — all ISO 20022
 
@@ -41,7 +44,7 @@ flowchart TD
 - **Survives node loss** — the headline failure demo: **kill a Cockroach node mid-load-test and the invariant still holds**, no double-spend, no committed entries lost.
 - **Exactly-once** under duplicate and concurrent payments via idempotency keys + serializable transactions.
 
-See [`PLAN.md`](./PLAN.md) for the build plan and [`docs/adr/`](./docs/adr/) for engineering decisions.
+See [`docs/product/brief.md`](./docs/product/brief.md) for the product thinking (users, success metrics, non-goals, risks), [`PLAN.md`](./PLAN.md) for the build plan, and [`docs/adr/`](./docs/adr/) for engineering decisions.
 
 ## Status
 
