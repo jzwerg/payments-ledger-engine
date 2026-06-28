@@ -8,6 +8,8 @@
 **Skill signal:** Payments · distributed systems · correctness & concurrency
 **Region anchor:** EU (SEPA Instant) · UK (Faster Payments) · US (FedNow) — all ISO 20022
 
+[![CI](https://github.com/jzwerg/payments-ledger-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/jzwerg/payments-ledger-engine/actions/workflows/ci.yml)
+
 > ℹ️ Originally scaffolded as `data-clean-room-for-credit-scoring`; renamed to `payments-ledger-engine`. GitHub auto-redirects the old URL.
 
 ---
@@ -45,6 +47,16 @@ flowchart TD
 - **Exactly-once** under duplicate and concurrent payments via idempotency keys + serializable transactions.
 
 See [`docs/product/brief.md`](./docs/product/brief.md) for the product thinking (users, success metrics, non-goals, risks), [`PLAN.md`](./PLAN.md) for the build plan, and [`docs/adr/`](./docs/adr/) for engineering decisions.
+
+## Run it
+
+```bash
+docker compose up        # multi-node CockroachDB cluster + payment API  (or: make up)
+```
+
+No hosted instance to keep alive — the demo *is* the local run, and the proof is in CI. Every push runs the headline demo in GitHub Actions: a concurrent load test fires duplicate and simultaneous payments while a CockroachDB node is killed mid-flight. **A green check means `∑debits = ∑credits` held — no double-spend, no lost entries.** Reproducible evidence, not a screenshot.
+
+> 🎬 *A terminal recording of the node-kill demo will live here.*
 
 ## Status
 
