@@ -5,8 +5,6 @@
 **Skill signal:** Payments · data modelling · correctness & concurrency · systems engineering
 **Region anchor:** EU (SEPA Instant) · UK (Faster Payments) · US (FedNow) — all ISO 20022
 
-> ℹ️ **Repo rename pending.** This repository was originally scaffolded as `data-clean-room-for-credit-scoring` and is being repurposed. Rename it to **`payments-ledger-engine`** in GitHub settings — GitHub auto-redirects the old URL, so existing links keep working.
-
 ---
 
 ## Why this exists
