@@ -19,13 +19,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Unit + concurrency tests
+      - name: Start CockroachDB (single node)
         run: |
-          if [ -f go.mod ]; then
-            go test ./...
-          else
-            echo "::notice::No Go module yet (PLAN.md milestone 1). CI will run 'go test ./...' — including the ∑debits=∑credits invariant and the no-double-spend concurrency test — once code lands."
-          fi
+          docker run -d --name crdb -p 26257:26257 \
+            cockroachdb/cockroach:v24.1.5 start-single-node --insecure
+      - name: Wait for CockroachDB
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec crdb cockroach sql --insecure -e "SELECT 1" >/dev/null 2>&1; then
+              echo "CockroachDB ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::CockroachDB did not become ready"; docker logs crdb; exit 1
+      - name: Unit + integration tests
+        # The invariant unit tests always run; the integration tests post
+        # movements against the live cluster when this URL is set.
+        env:
+          LEDGER_TEST_DATABASE_URL: "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
+        run: go test ./...
 
   failure-demo:
     name: Headline demo — kill a node, invariant holds

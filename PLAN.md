@@ -27,3 +27,4 @@ A double-entry ledger on CockroachDB that processes ISO 20022 messages correctly
 
 - **Double-entry ledger + exactly-once semantics** — `docs/adr/0001-ledger-and-idempotency.md`.
 - **CockroachDB as the ledger store** — `docs/adr/0002-cockroachdb-ledger-store.md`.
+- **Serializable transactions with retry-on-conflict** — `docs/adr/0003-serializable-transactions-and-retry.md`.

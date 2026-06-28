@@ -1,10 +1,10 @@
 // Command api is the payment/ledger service entry point.
 //
-// Milestone 0 (first boot): connect to the CockroachDB cluster, run the
-// startup migration that creates the `ledger` database and the append-only
-// double-entry schema, then serve a health endpoint. Business logic — the
-// balance invariant, idempotency keys, ISO 20022 — lands in later milestones
-// (see PLAN.md); this file deliberately stops at "the stack boots and connects".
+// On startup it connects to the CockroachDB cluster, creates the `ledger`
+// database and schema (idempotent migration), and serves a health endpoint.
+// The double-entry posting logic and the ∑debits = ∑credits invariant live in
+// internal/ledger; later milestones add the payment API, ISO 20022, and
+// reconciliation on top (see PLAN.md).
 package main
 
 import (
@@ -17,7 +17,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/jzwerg/payments-ledger-engine/internal/ledger"
 )
 
 const (
@@ -41,9 +43,11 @@ func run(logger *slog.Logger) error {
 	dsn := getenv("DATABASE_URL", defaultDatabaseURL)
 	port := getenv("PORT", defaultPort)
 
-	if err := migrate(ctx, logger, dsn); err != nil {
-		return fmt.Errorf("migration: %w", err)
+	pool, err := setupDatabase(ctx, logger, dsn)
+	if err != nil {
+		return err
 	}
+	defer pool.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -65,40 +69,39 @@ func run(logger *slog.Logger) error {
 	return nil
 }
 
-// migrate creates the ledger database (if absent) and applies the schema.
+// setupDatabase creates the ledger database (if absent) and applies the schema,
+// returning a pool connected to the ledger database.
 //
 // The DATABASE_URL points at the `ledger` database, which does not exist on a
 // fresh cluster — so we first connect to CockroachDB's default database to
-// create it, then connect to `ledger` to install the schema. Both steps are
-// idempotent, so a restarting API re-runs them harmlessly.
-func migrate(ctx context.Context, logger *slog.Logger, dsn string) error {
-	bootstrapDSN, err := bootstrapDSN(dsn)
+// create it, then connect to `ledger` and migrate. Both steps are idempotent.
+func setupDatabase(ctx context.Context, logger *slog.Logger, dsn string) (*pgxpool.Pool, error) {
+	bootDSN, err := bootstrapDSN(dsn)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	bootstrap, err := connectWithRetry(ctx, logger, bootstrapDSN)
+	bootPool, err := openPoolWithRetry(ctx, logger, bootDSN)
 	if err != nil {
-		return fmt.Errorf("connect (bootstrap): %w", err)
+		return nil, fmt.Errorf("connect (bootstrap): %w", err)
 	}
-	if _, err := bootstrap.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+ledgerDatabase); err != nil {
-		_ = bootstrap.Close(ctx)
-		return fmt.Errorf("create database: %w", err)
+	if _, err := bootPool.Exec(ctx, "CREATE DATABASE IF NOT EXISTS "+ledgerDatabase); err != nil {
+		bootPool.Close()
+		return nil, fmt.Errorf("create database: %w", err)
 	}
-	_ = bootstrap.Close(ctx)
+	bootPool.Close()
 	logger.Info("database ready", "database", ledgerDatabase)
 
-	conn, err := connectWithRetry(ctx, logger, dsn)
+	pool, err := openPoolWithRetry(ctx, logger, dsn)
 	if err != nil {
-		return fmt.Errorf("connect (ledger): %w", err)
+		return nil, fmt.Errorf("connect (ledger): %w", err)
 	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
+	if err := ledger.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	logger.Info("schema applied")
-	return nil
+	return pool, nil
 }
 
 // bootstrapDSN rewrites a DSN to target CockroachDB's default database, so we
@@ -112,19 +115,19 @@ func bootstrapDSN(dsn string) (string, error) {
 	return u.String(), nil
 }
 
-// connectWithRetry dials the cluster with bounded exponential backoff. Even
+// openPoolWithRetry dials the cluster with bounded exponential backoff. Even
 // though the API waits on `crdb-init: service_completed_successfully`, a node
 // may need a moment more to accept SQL connections.
-func connectWithRetry(ctx context.Context, logger *slog.Logger, dsn string) (*pgx.Conn, error) {
+func openPoolWithRetry(ctx context.Context, logger *slog.Logger, dsn string) (*pgxpool.Pool, error) {
 	var lastErr error
 	delay := 500 * time.Millisecond
 	for attempt := 1; attempt <= 10; attempt++ {
-		conn, err := pgx.Connect(ctx, dsn)
+		pool, err := pgxpool.New(ctx, dsn)
 		if err == nil {
-			if err = conn.Ping(ctx); err == nil {
-				return conn, nil
+			if err = pool.Ping(ctx); err == nil {
+				return pool, nil
 			}
-			_ = conn.Close(ctx)
+			pool.Close()
 		}
 		lastErr = err
 		logger.Warn("database not ready, retrying", "attempt", attempt, "err", err)
