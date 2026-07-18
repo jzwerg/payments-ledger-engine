@@ -1,3 +1,6 @@
 
 # Local environment
 .env
+
+# Compiled binary
+/payments-ledger-engine
