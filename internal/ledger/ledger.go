@@ -3,10 +3,11 @@
 // It enforces the project's central invariant — ∑debits = ∑credits for every
 // transaction — in code, and posts movements inside CockroachDB serializable
 // transactions with retry-on-conflict. Balances are *derived* by aggregating
-// entries; no account row is ever mutated in place.
+// entries; no account row is ever mutated in place. Posting can be made
+// exactly-once with an idempotency key (PostTransactionIdempotent).
 //
-// Out of scope here (later milestones): idempotency keys, ISO 20022 parsing,
-// reconciliation, and the kill-a-node failure demo.
+// Out of scope here (later milestones): ISO 20022 parsing, reconciliation, and
+// the kill-a-node failure demo.
 package ledger
 
 import (
@@ -36,6 +37,13 @@ var (
 	ErrMissingAccount    = errors.New("ledger: entry is missing an account id")
 	ErrMixedCurrency     = errors.New("ledger: all entries in a transaction must share one currency")
 	ErrUnbalanced        = errors.New("ledger: ∑debits ≠ ∑credits")
+
+	// ErrMissingIdempotencyKey is returned when an idempotent post is called
+	// without a key.
+	ErrMissingIdempotencyKey = errors.New("ledger: idempotency key is required")
+	// ErrIdempotencyConflict is returned when a key is reused with a request
+	// that differs from the one it originally recorded.
+	ErrIdempotencyConflict = errors.New("ledger: idempotency key reused with a different request")
 )
 
 // EntryInput is a single debit or credit line. Amount is a positive magnitude
@@ -96,25 +104,93 @@ func (l *Ledger) PostTransaction(ctx context.Context, in TransactionInput) (stri
 
 	var txnID string
 	err := l.inSerializableTx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO transactions (description) VALUES ($1) RETURNING id`,
-			in.Description,
-		).Scan(&txnID); err != nil {
-			return fmt.Errorf("insert transaction: %w", err)
-		}
-		for _, e := range in.Entries {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO entries (transaction_id, account_id, direction, amount, currency)
-				 VALUES ($1, $2, $3, $4, $5)`,
-				txnID, e.AccountID, string(e.Direction), e.Amount, e.Currency,
-			); err != nil {
-				return fmt.Errorf("insert entry: %w", err)
-			}
-		}
-		return nil
+		id, err := insertMovement(ctx, tx, in)
+		txnID = id
+		return err
 	})
 	if err != nil {
 		return "", err
+	}
+	return txnID, nil
+}
+
+// PostTransactionIdempotent posts a movement exactly once for the given key.
+//
+// The first call with a key posts the transaction, records the key, and
+// returns created=true. A later call with the same key and the same
+// requestHash replays the original transaction id (created=false) without
+// posting again. Reusing a key with a different requestHash returns
+// ErrIdempotencyConflict. Concurrent duplicates are safe: serializable
+// isolation aborts the loser, and the retry finds the recorded key.
+func (l *Ledger) PostTransactionIdempotent(ctx context.Context, key, requestHash string, in TransactionInput) (txnID string, created bool, err error) {
+	if key == "" {
+		return "", false, ErrMissingIdempotencyKey
+	}
+	if err := validate(in); err != nil {
+		return "", false, err
+	}
+
+	var (
+		resultID   string
+		wasCreated bool
+	)
+	txErr := l.inSerializableTx(ctx, func(tx pgx.Tx) error {
+		var existingID, existingHash string
+		scanErr := tx.QueryRow(ctx,
+			`SELECT transaction_id, request_hash FROM idempotency_keys WHERE key = $1`,
+			key,
+		).Scan(&existingID, &existingHash)
+		switch {
+		case scanErr == nil:
+			// Key already used — a retry. Replay only if the request matches.
+			if existingHash != requestHash {
+				return ErrIdempotencyConflict
+			}
+			resultID, wasCreated = existingID, false
+			return nil
+		case errors.Is(scanErr, pgx.ErrNoRows):
+			// New key — fall through and post the movement.
+		default:
+			return fmt.Errorf("lookup idempotency key: %w", scanErr)
+		}
+
+		id, err := insertMovement(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)`,
+			key, requestHash, id,
+		); err != nil {
+			return fmt.Errorf("insert idempotency key: %w", err)
+		}
+		resultID, wasCreated = id, true
+		return nil
+	})
+	if txErr != nil {
+		return "", false, txErr
+	}
+	return resultID, wasCreated, nil
+}
+
+// insertMovement appends a transaction and its entries within tx, returning the
+// new transaction id. Callers must validate the input first.
+func insertMovement(ctx context.Context, tx pgx.Tx, in TransactionInput) (string, error) {
+	var txnID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO transactions (description) VALUES ($1) RETURNING id`,
+		in.Description,
+	).Scan(&txnID); err != nil {
+		return "", fmt.Errorf("insert transaction: %w", err)
+	}
+	for _, e := range in.Entries {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO entries (transaction_id, account_id, direction, amount, currency)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			txnID, e.AccountID, string(e.Direction), e.Amount, e.Currency,
+		); err != nil {
+			return "", fmt.Errorf("insert entry: %w", err)
+		}
 	}
 	return txnID, nil
 }
@@ -159,7 +235,7 @@ func (l *Ledger) inSerializableTx(ctx context.Context, fn func(pgx.Tx) error) er
 		// not useful, so we ignore it.
 		_ = tx.Rollback(ctx)
 
-		if isSerializationFailure(err) {
+		if isRetryable(err) {
 			lastErr = err
 			continue
 		}
@@ -213,12 +289,17 @@ func validate(in TransactionInput) error {
 	return nil
 }
 
-// isSerializationFailure reports whether err is CockroachDB's retryable
-// serialization failure (SQLSTATE 40001).
-func isSerializationFailure(err error) bool {
+// isRetryable reports whether err is a transaction failure worth re-running.
+//
+//   - 40001 (serialization_failure): CockroachDB's documented retry contract —
+//     a conflicting transaction was aborted; the client re-runs it.
+//   - 23505 (unique_violation): two concurrent idempotent posts raced on the
+//     same key. Re-running finds the recorded key and replays its result, so
+//     the operation converges instead of erroring.
+func isRetryable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "40001"
+		return pgErr.Code == "40001" || pgErr.Code == "23505"
 	}
 	return false
 }

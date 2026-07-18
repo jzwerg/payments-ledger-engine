@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/jzwerg/payments-ledger-engine/internal/api"
 	"github.com/jzwerg/payments-ledger-engine/internal/ledger"
 )
 
@@ -49,16 +50,9 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           api.NewServer(ledger.New(pool), logger).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

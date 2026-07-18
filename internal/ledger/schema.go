@@ -14,20 +14,22 @@ type execer interface {
 
 // schemaSQL is the append-only double-entry ledger schema.
 //
-// Milestone 1 scope: the schema plus the in-code invariant and serializable
-// posting live here. The schema stays tables-only — the ∑debits = ∑credits
-// invariant is enforced in PostTransaction (see ledger.go), not by a DB
-// constraint, because it spans multiple rows of a single transaction.
-// Idempotency keys, ISO 20022, and reconciliation are later milestones.
+// The schema stays tables-only — the ∑debits = ∑credits invariant is enforced
+// in PostTransaction (see ledger.go), not by a DB constraint, because it spans
+// multiple rows of a single transaction. ISO 20022 and reconciliation are
+// later milestones.
 //
 // Model:
-//   - accounts      — the books money moves between; balances are *derived*
+//   - accounts         — the books money moves between; balances are *derived*
 //     from entries, never stored mutably on the account.
-//   - transactions  — one balanced money movement (a journal entry / payment);
+//   - transactions     — one balanced money movement (a journal entry / payment);
 //     groups the entry lines that must net to zero.
-//   - entries       — immutable, append-only debit/credit lines. The ledger is
-//     never updated or deleted in place; corrections are new
-//     compensating entries.
+//   - entries          — immutable, append-only debit/credit lines. The ledger
+//     is never updated or deleted in place; corrections are new compensating
+//     entries.
+//   - idempotency_keys — maps a client-supplied key to the transaction it
+//     produced, so a retried payment returns the original result instead of
+//     posting a second movement (milestone 2, ADR 0001).
 //
 // Everything is IF NOT EXISTS so a restarting API (or a re-run test) is
 // harmless.
@@ -59,6 +61,16 @@ CREATE TABLE IF NOT EXISTS entries (
 
 CREATE INDEX IF NOT EXISTS entries_account_idx ON entries (account_id);
 CREATE INDEX IF NOT EXISTS entries_transaction_idx ON entries (transaction_id);
+
+-- Exactly-once: a client key maps to at most one transaction. request_hash
+-- lets us tell a genuine retry (same request -> replay the result) from a key
+-- reused for a different request (a conflict, which we reject).
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key            STRING PRIMARY KEY,
+    request_hash   STRING NOT NULL,
+    transaction_id UUID NOT NULL REFERENCES transactions (id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `
 
 // Migrate installs the ledger schema. It is idempotent and safe to call on
