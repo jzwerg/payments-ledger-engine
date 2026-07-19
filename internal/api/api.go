@@ -43,6 +43,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /accounts", s.handleCreateAccount)
 	mux.HandleFunc("GET /accounts/{id}/balance", s.handleBalance)
 	mux.HandleFunc("POST /payments", s.handlePayment)
+	mux.HandleFunc("POST /iso20022/pain001", s.handlePain001)
 	return mux
 }
 
