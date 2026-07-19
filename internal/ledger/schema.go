@@ -38,8 +38,16 @@ CREATE TABLE IF NOT EXISTS accounts (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name       STRING NOT NULL,
     currency   STRING NOT NULL,
+    -- Optional external identifier (e.g. an IBAN) used to resolve ISO 20022
+    -- parties to ledger accounts. NULL for accounts created without one.
+    iban       STRING,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Add iban to accounts created before milestone 3, and make it unique. A
+-- unique index treats NULLs as distinct, so accounts without an IBAN coexist.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS iban STRING;
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_iban_idx ON accounts (iban);
 
 CREATE TABLE IF NOT EXISTS transactions (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),

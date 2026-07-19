@@ -13,14 +13,14 @@ A double-entry ledger on CockroachDB that processes ISO 20022 messages correctly
 0. ✅ **First boot** — `make up` brings up the cluster + API; startup migration creates the `ledger` DB and schema; `/health` on :8100. (See `MILESTONE.md`.)
 1. ✅ **Ledger on CockroachDB** — append-only double-entry schema, derived balances, the `∑debits = ∑credits` invariant enforced in code and asserted in tests; serializable transactions with retry-on-conflict (`internal/ledger`, ADR 0003).
 2. ✅ **Payment API** — `POST /payments` applies balanced movements in serializable transactions and enforces idempotency keys (exactly-once: retries replay, key-reuse conflicts). Supporting endpoints: `POST /accounts`, `GET /accounts/{id}/balance` (`internal/api`). *Accepts a JSON payment body for now; the `pain.001` XML form arrives in milestone 3.*
-3. ▶️ **NEXT — ISO 20022 processing** — parse `pain.001`, emit `pacs.008`, handle `pacs.002` status.
-4. **Reconciliation engine** — match a mock external statement against the ledger; flag breaks.
+3. ✅ **ISO 20022 processing** — `POST /iso20022/pain001` parses a real `pain.001`, posts each transfer through the milestone-2 idempotent path (keyed by EndToEndId), returns a `pacs.002` status report, and emits a `pacs.008` interbank message (`internal/iso20022`, ADR 0004).
+4. ▶️ **NEXT — Reconciliation engine** — match a mock external statement against the ledger; flag breaks.
 5. **Failure demos** — (a) concurrency test firing duplicate + simultaneous payments (no double-spend); (b) kill a Cockroach node mid-load (invariant holds, cluster recovers).
 6. **Polish** — README diagram, ADRs, GitHub Actions CI with a meaningful test suite.
 
 ### Current status
 
-Milestones 0–2 are done and green in CI. **Next up: milestone 3 — ISO 20022 processing.** Scope it to: an `internal/iso20022` package that parses a real `pain.001` (customer credit transfer initiation) XML document, maps it onto a payment (reusing the milestone-2 idempotent posting path), emits a `pacs.008` (FI-to-FI credit transfer) message, and records `pacs.002` (payment status report) status. Prefer validating against the real ISO 20022 XSDs over a hand-rolled JSON stand-in (see "Key technical challenges").
+Milestones 0–3 are done and green in CI. **Next up: milestone 4 — reconciliation engine.** Scope it to: an `internal/reconciliation` package that ingests a mock external bank statement (e.g. an ISO 20022 `camt.053` account statement, or a simple statement-line format) and matches its entries against the ledger's derived positions, flagging **breaks** — statement lines with no matching ledger entry, ledger entries missing from the statement, and amount mismatches. Expose it (a `POST /reconciliation` run or a `make` target) and assert, in tests, that a clean statement reconciles with zero breaks and that injected discrepancies are each flagged with the right break type. Reuse the append-only ledger as the source of truth; do not mutate entries to "fix" a break — reconciliation reports, it does not correct.
 
 ## Key technical challenges
 
@@ -33,3 +33,4 @@ Milestones 0–2 are done and green in CI. **Next up: milestone 3 — ISO 20022 
 - **Double-entry ledger + exactly-once semantics** — `docs/adr/0001-ledger-and-idempotency.md`.
 - **CockroachDB as the ledger store** — `docs/adr/0002-cockroachdb-ledger-store.md`.
 - **Serializable transactions with retry-on-conflict** — `docs/adr/0003-serializable-transactions-and-retry.md`.
+- **ISO 20022 processing** — `docs/adr/0004-iso20022-processing.md`.

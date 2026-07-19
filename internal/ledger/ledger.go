@@ -91,6 +91,41 @@ func (l *Ledger) CreateAccount(ctx context.Context, name, currency string) (stri
 	return id, nil
 }
 
+// GetOrCreateAccountByIBAN resolves an account by its IBAN, creating it with
+// the given name and currency if none exists yet. It lets ISO 20022 parties
+// (debtor/creditor) map onto ledger accounts. Safe under concurrent creates:
+// the unique index rejects the loser, which then re-selects the winner's row.
+func (l *Ledger) GetOrCreateAccountByIBAN(ctx context.Context, iban, name, currency string) (string, error) {
+	if iban == "" {
+		return "", errors.New("ledger: iban is required")
+	}
+
+	var id string
+	err := l.pool.QueryRow(ctx, `SELECT id FROM accounts WHERE iban = $1`, iban).Scan(&id)
+	switch {
+	case err == nil:
+		return id, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return "", fmt.Errorf("lookup account by iban: %w", err)
+	}
+
+	err = l.pool.QueryRow(ctx,
+		`INSERT INTO accounts (name, currency, iban) VALUES ($1, $2, $3) RETURNING id`,
+		name, currency, iban,
+	).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	// Lost a create race: the row now exists, so re-select it.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if e := l.pool.QueryRow(ctx, `SELECT id FROM accounts WHERE iban = $1`, iban).Scan(&id); e == nil {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("create account by iban: %w", err)
+}
+
 // PostTransaction validates the double-entry invariant in code, then appends
 // the transaction and its entries inside a single serializable transaction,
 // retrying on serialization conflicts. It returns the new transaction id.
