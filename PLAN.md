@@ -22,6 +22,8 @@ A double-entry ledger on CockroachDB that processes ISO 20022 messages correctly
 
 Milestones 0–3 are done and green in CI. **Next up: milestone 4 — reconciliation engine.** Scope it to: an `internal/reconciliation` package that ingests a mock external bank statement (e.g. an ISO 20022 `camt.053` account statement, or a simple statement-line format) and matches its entries against the ledger's derived positions, flagging **breaks** — statement lines with no matching ledger entry, ledger entries missing from the statement, and amount mismatches. Expose it (a `POST /reconciliation` run or a `make` target) and assert, in tests, that a clean statement reconciles with zero breaks and that injected discrepancies are each flagged with the right break type. Reuse the append-only ledger as the source of truth; do not mutate entries to "fix" a break — reconciliation reports, it does not correct.
 
+**How to continue (next session):** work on branch `claude/product-thinking-repos-cmbegm` (create it from `main` if it doesn't exist — it is deleted when each milestone's PR merges). `main` holds the completed milestones; confirm milestone 3 has merged (PR #6) before starting so `internal/iso20022` is present. Keep the established rhythm: build, `gofmt`/`go vet`/`go build ./...`, `go test ./...` (unit tests pass locally; DB-backed tests skip without `LEDGER_TEST_DATABASE_URL` and run in CI against CockroachDB v24.1.5), `docker compose config -q`, then commit and push. Update this section to mark milestone 4 done and point to milestone 5 when finished.
+
 ## Key technical challenges
 
 - Enforcing the balance invariant under concurrent writes across a multi-node cluster without sacrificing throughput.
